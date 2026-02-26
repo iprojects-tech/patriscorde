@@ -1,19 +1,12 @@
 "use server"
 
-import { getProducts, getProductsCount } from "@/lib/db/products"
+import { getProductsCount } from "@/lib/db/products"
 import { getOrders, getOrdersCount, getOrdersRevenue } from "@/lib/db/orders"
 import { getCustomersCount } from "@/lib/db/customers"
-import { createClient } from "@/lib/supabase/server"
+import { pgQuery } from "@/lib/postgres"
 
 export async function getDashboardStats() {
-  const [
-    totalProducts,
-    totalOrders,
-    totalCustomers,
-    totalRevenue,
-    recentOrders,
-    topProducts,
-  ] = await Promise.all([
+  const [totalProducts, totalOrders, totalCustomers, totalRevenue, recentOrders, topProducts] = await Promise.all([
     getProductsCount(),
     getOrdersCount(),
     getCustomersCount(),
@@ -22,7 +15,6 @@ export async function getDashboardStats() {
     getTopProductsData(),
   ])
 
-  // Get last month's stats for comparison
   const lastMonthStart = new Date()
   lastMonthStart.setMonth(lastMonthStart.getMonth() - 1)
   lastMonthStart.setDate(1)
@@ -45,13 +37,8 @@ export async function getDashboardStats() {
     getOrdersCountInRange(thisMonthStart.toISOString()),
   ])
 
-  const revenueChange = lastMonthRevenue > 0 
-    ? Math.round(((thisMonthRevenue - lastMonthRevenue) / lastMonthRevenue) * 100) 
-    : 0
-
-  const ordersChange = lastMonthOrders > 0 
-    ? Math.round(((thisMonthOrders - lastMonthOrders) / lastMonthOrders) * 100) 
-    : 0
+  const revenueChange = lastMonthRevenue > 0 ? Math.round(((thisMonthRevenue - lastMonthRevenue) / lastMonthRevenue) * 100) : 0
+  const ordersChange = lastMonthOrders > 0 ? Math.round(((thisMonthOrders - lastMonthOrders) / lastMonthOrders) * 100) : 0
 
   return {
     totalProducts,
@@ -60,8 +47,8 @@ export async function getDashboardStats() {
     totalRevenue,
     revenueChange,
     ordersChange,
-    customersChange: 0, // Could implement if tracking new customers per month
-    recentOrders: recentOrders.map(order => ({
+    customersChange: 0,
+    recentOrders: recentOrders.map((order) => ({
       id: order.id,
       orderNumber: order.order_number,
       status: order.status,
@@ -77,81 +64,48 @@ export async function getDashboardStats() {
   }
 }
 
-// Get top selling products based on order_items
 async function getTopProductsData() {
-  const supabase = await createClient()
-  
-  // Get all order items with product info, grouped by product
-  const { data, error } = await supabase
-    .from("order_items")
-    .select("product_id, product_name, product_image, quantity, unit_price")
-  
-  if (error) {
-    console.error("Error fetching top products:", error)
-    return []
-  }
-  
-  // Aggregate sales by product
-  const productSales: Record<string, {
-    productId: string
-    name: string
-    image: string | null
-    totalSold: number
-    revenue: number
-  }> = {}
-  
-  for (const item of data) {
-    if (!item.product_id) continue
-    
-    if (!productSales[item.product_id]) {
-      productSales[item.product_id] = {
-        productId: item.product_id,
-        name: item.product_name,
-        image: item.product_image,
-        totalSold: 0,
-        revenue: 0,
-      }
-    }
-    
-    productSales[item.product_id].totalSold += item.quantity
-    productSales[item.product_id].revenue += item.unit_price * item.quantity
-  }
-  
-  // Sort by total sold and return top 10
-  return Object.values(productSales)
-    .sort((a, b) => b.totalSold - a.totalSold)
-    .slice(0, 10)
-    .map(p => ({
-      product: {
-        id: p.productId,
-        name: p.name,
-        main_image: p.image,
-      },
-      totalSold: p.totalSold,
-      revenue: p.revenue,
-    }))
+  const result = await pgQuery<{
+    product_id: string
+    product_name: string
+    product_image: string | null
+    totalsold: string
+    revenue: string
+  }>(
+    `SELECT
+      product_id,
+      product_name,
+      product_image,
+      SUM(quantity)::text AS totalsold,
+      SUM(unit_price * quantity)::text AS revenue
+     FROM public.order_items
+     WHERE product_id IS NOT NULL
+     GROUP BY product_id, product_name, product_image
+     ORDER BY SUM(quantity) DESC
+     LIMIT 10`,
+  )
+
+  return result.rows.map((p) => ({
+    product: {
+      id: p.product_id,
+      name: p.product_name,
+      main_image: p.product_image,
+    },
+    totalSold: Number(p.totalsold),
+    revenue: Number(p.revenue),
+  }))
 }
 
 async function getOrdersCountInRange(startDate: string, endDate?: string) {
-  const supabase = await createClient()
-  
-  let query = supabase
-    .from("orders")
-    .select("*", { count: "exact", head: true })
-    .gte("created_at", startDate)
-  
+  const values: unknown[] = [startDate]
+  let sql = "SELECT COUNT(*)::text AS count FROM public.orders WHERE created_at >= $1"
   if (endDate) {
-    query = query.lte("created_at", endDate)
+    values.push(endDate)
+    sql += ` AND created_at <= $${values.length}`
   }
-  
-  const { count, error } = await query
-  
-  if (error) {
-    console.error("Error counting orders in range:", error)
-    return 0
-  }
-  
-  return count || 0
+
+  const result = await pgQuery<{ count: string }>(sql, values)
+  return Number(result.rows[0]?.count ?? 0)
 }
 
 export async function getAdminOrders(options?: {
@@ -160,44 +114,53 @@ export async function getAdminOrders(options?: {
   limit?: number
   offset?: number
 }) {
-  const supabase = await createClient()
-  
-  let query = supabase
-    .from("orders")
-    .select("*, items:order_items(*)")
-    .order("created_at", { ascending: false })
-  
+  const values: unknown[] = []
+  const conditions: string[] = []
+
   if (options?.status) {
-    query = query.eq("status", options.status)
+    values.push(options.status)
+    conditions.push(`o.status = $${values.length}`)
   }
-  
   if (options?.search) {
-    query = query.or(`order_number.ilike.%${options.search}%,customer_email.ilike.%${options.search}%,customer_name.ilike.%${options.search}%`)
+    values.push(`%${options.search}%`)
+    conditions.push(`(o.order_number ILIKE $${values.length} OR o.customer_email ILIKE $${values.length} OR o.customer_name ILIKE $${values.length})`)
   }
-  
-  if (options?.limit) {
-    query = query.limit(options.limit)
+
+  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : ""
+  const limit = options?.limit ?? 50
+  const offset = options?.offset ?? 0
+  values.push(limit, offset)
+
+  const ordersResult = await pgQuery<any>(
+    `SELECT o.* FROM public.orders o
+     ${where}
+     ORDER BY o.created_at DESC
+     LIMIT $${values.length - 1} OFFSET $${values.length}`,
+    values,
+  )
+
+  const orders = ordersResult.rows
+  if (orders.length === 0) return []
+
+  const ids = orders.map((o: any) => o.id)
+  const itemsResult = await pgQuery<any>(
+    `SELECT * FROM public.order_items WHERE order_id = ANY($1::uuid[]) ORDER BY created_at ASC`,
+    [ids],
+  )
+  const itemsByOrder = new Map<string, any[]>()
+  for (const item of itemsResult.rows) {
+    if (!itemsByOrder.has(item.order_id)) itemsByOrder.set(item.order_id, [])
+    itemsByOrder.get(item.order_id)!.push(item)
   }
-  
-  if (options?.offset) {
-    query = query.range(options.offset, options.offset + (options.limit || 10) - 1)
-  }
-  
-  const { data, error } = await query
-  
-  if (error) {
-    console.error("Error fetching admin orders:", error)
-    return []
-  }
-  
-  return data.map(order => ({
+
+  return orders.map((order: any) => ({
     id: order.id,
     orderNumber: order.order_number,
     status: order.status,
     paymentStatus: order.status === "paid" ? "paid" : order.status === "cancelled" ? "failed" : "pending",
     total: order.total,
     createdAt: order.created_at,
-    items: order.items || [],
+    items: itemsByOrder.get(order.id) || [],
     customer: {
       firstName: order.customer_name?.split(" ")[0] || "Guest",
       lastName: order.customer_name?.split(" ").slice(1).join(" ") || "",
@@ -211,120 +174,119 @@ export async function getAdminProducts(options?: {
   categoryId?: string
   search?: string
 }) {
-  const supabase = await createClient()
-  
-  let query = supabase
-    .from("products")
-    .select("*, category:categories(*)")
-    .order("created_at", { ascending: false })
-  
+  const values: unknown[] = []
+  const conditions: string[] = []
+
   if (options?.status) {
-    query = query.eq("status", options.status)
+    values.push(options.status)
+    conditions.push(`p.status = $${values.length}`)
   }
-  
   if (options?.categoryId) {
-    query = query.eq("category_id", options.categoryId)
+    values.push(options.categoryId)
+    conditions.push(`p.category_id = $${values.length}`)
   }
-  
   if (options?.search) {
-    query = query.or(`name.ilike.%${options.search}%,sku.ilike.%${options.search}%`)
+    values.push(`%${options.search}%`)
+    conditions.push(`(p.name ILIKE $${values.length} OR p.sku ILIKE $${values.length})`)
   }
-  
-  const { data, error } = await query
-  
-  if (error) {
-    console.error("Error fetching admin products:", error)
-    return []
-  }
-  
-  return data
+
+  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : ""
+  const result = await pgQuery<any>(
+    `SELECT p.*, row_to_json(c) AS category
+     FROM public.products p
+     LEFT JOIN public.categories c ON c.id = p.category_id
+     ${where}
+     ORDER BY p.created_at DESC`,
+    values,
+  )
+  return result.rows
 }
 
 export async function getAdminProductById(id: string) {
-  const supabase = await createClient()
-  
-  const { data, error } = await supabase
-    .from("products")
-    .select("*, category:categories(*)")
-    .eq("id", id)
-    .single()
-  
-  if (error) {
-    console.error("Error fetching product:", error)
-    return null
-  }
-  
-  return data
+  const result = await pgQuery<any>(
+    `SELECT p.*, row_to_json(c) AS category
+     FROM public.products p
+     LEFT JOIN public.categories c ON c.id = p.category_id
+     WHERE p.id = $1
+     LIMIT 1`,
+    [id],
+  )
+  return result.rows[0] ?? null
 }
 
-export async function updateAdminProduct(id: string, updates: {
-  name?: string
-  sku?: string
-  description?: string
-  price?: number
-  status?: string
-  category_id?: string | null
-  main_image?: string | null
-  gallery?: string[] | null
-  featured?: boolean
-  variants?: { sizes?: string[]; colors?: { name: string; value: string }[] } | null
-}) {
-  const supabase = await createClient()
-  
-  const { data, error } = await supabase
-    .from("products")
-    .update({ ...updates, updated_at: new Date().toISOString() })
-    .eq("id", id)
-    .select()
-    .single()
-  
-  if (error) {
+export async function updateAdminProduct(
+  id: string,
+  updates: {
+    name?: string
+    sku?: string
+    description?: string
+    price?: number
+    status?: string
+    category_id?: string | null
+    main_image?: string | null
+    gallery?: string[] | null
+    featured?: boolean
+    variants?: { sizes?: string[]; colors?: { name: string; value: string }[] } | null
+  },
+) {
+  try {
+    const result = await pgQuery<any>(
+      `UPDATE public.products
+       SET
+        name = COALESCE($2, name),
+        sku = COALESCE($3, sku),
+        description = COALESCE($4, description),
+        price = COALESCE($5, price),
+        status = COALESCE($6, status),
+        category_id = COALESCE($7, category_id),
+        main_image = COALESCE($8, main_image),
+        gallery = COALESCE($9, gallery),
+        featured = COALESCE($10, featured),
+        variants = COALESCE($11, variants),
+        updated_at = NOW()
+       WHERE id = $1
+       RETURNING *`,
+      [
+        id,
+        updates.name ?? null,
+        updates.sku ?? null,
+        updates.description ?? null,
+        updates.price ?? null,
+        updates.status ?? null,
+        updates.category_id ?? null,
+        updates.main_image ?? null,
+        updates.gallery ?? null,
+        updates.featured ?? null,
+        updates.variants ? JSON.stringify(updates.variants) : null,
+      ],
+    )
+    return { success: true, product: result.rows[0] }
+  } catch (error: any) {
     console.error("Error updating product:", error)
     return { error: error.message }
   }
-  
-  return { success: true, product: data }
 }
 
 export async function deleteAdminProduct(id: string) {
-  const supabase = await createClient()
-  
-  const { error } = await supabase
-    .from("products")
-    .delete()
-    .eq("id", id)
-  
-  if (error) {
+  try {
+    await pgQuery("DELETE FROM public.products WHERE id = $1", [id])
+    return { success: true }
+  } catch (error: any) {
     console.error("Error deleting product:", error)
     return { error: error.message }
   }
-  
-  return { success: true }
 }
 
 export async function getAdminCategories() {
-  const supabase = await createClient()
-  
-  const { data, error } = await supabase
-    .from("categories")
-    .select("*")
-    .order("name", { ascending: true })
-  
-  if (error) {
-    console.error("Error fetching categories:", error)
-    return []
-  }
-  
-  return data
+  const result = await pgQuery<any>("SELECT * FROM public.categories ORDER BY name ASC")
+  return result.rows
 }
 
 export async function getRevenueChartData(period: "7days" | "months" | "years") {
-  const supabase = await createClient()
-  
   const now = new Date()
   let startDate: Date
   let groupBy: "day" | "month" | "year"
-  
+
   if (period === "7days") {
     startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
     groupBy = "day"
@@ -335,91 +297,63 @@ export async function getRevenueChartData(period: "7days" | "months" | "years") 
     startDate = new Date(now.getFullYear() - 4, 0, 1)
     groupBy = "year"
   }
-  
-  const { data, error } = await supabase
-    .from("orders")
-    .select("total, created_at")
-    .gte("created_at", startDate.toISOString())
-    .neq("status", "cancelled")
-    .order("created_at", { ascending: true })
-  
-  if (error) {
-    console.error("Error fetching revenue data:", error)
-    return []
-  }
-  
-  // Group data by period
+
+  const result = await pgQuery<{ total: number; created_at: string }>(
+    `SELECT total, created_at
+     FROM public.orders
+     WHERE created_at >= $1 AND status <> 'cancelled'
+     ORDER BY created_at ASC`,
+    [startDate.toISOString()],
+  )
+
   const grouped: Record<string, number> = {}
-  
-  for (const order of data) {
+
+  for (const order of result.rows) {
     const date = new Date(order.created_at)
-    let key: string
-    
-    if (groupBy === "day") {
-      key = date.toLocaleDateString("en-US", { weekday: "short" })
-    } else if (groupBy === "month") {
-      key = date.toLocaleDateString("en-US", { month: "short" })
-    } else {
-      key = date.getFullYear().toString()
-    }
-    
-    grouped[key] = (grouped[key] || 0) + order.total
+    const key =
+      groupBy === "day"
+        ? date.toLocaleDateString("en-US", { weekday: "short" })
+        : groupBy === "month"
+        ? date.toLocaleDateString("en-US", { month: "short" })
+        : date.getFullYear().toString()
+    grouped[key] = (grouped[key] || 0) + Number(order.total)
   }
-  
-  // Convert to array format for chart
-  return Object.entries(grouped).map(([label, revenue]) => ({
-    label,
-    revenue,
-  }))
+
+  return Object.entries(grouped).map(([label, revenue]) => ({ label, revenue }))
 }
 
 export async function updateOrderStatus(orderId: string, status: string) {
-  const supabase = await createClient()
-  
-  const { data, error } = await supabase
-    .from("orders")
-    .update({ status, updated_at: new Date().toISOString() })
-    .eq("id", orderId)
-    .select()
-    .single()
-  
-  if (error) {
+  try {
+    const result = await pgQuery<any>(
+      "UPDATE public.orders SET status = $2, updated_at = NOW() WHERE id = $1 RETURNING *",
+      [orderId, status],
+    )
+    return { success: true, order: result.rows[0] }
+  } catch (error: any) {
     console.error("Error updating order status:", error)
     return { error: error.message }
   }
-  
-  return { success: true, order: data }
 }
 
 export async function getOrderById(orderId: string) {
-  const supabase = await createClient()
-  
-  const { data, error } = await supabase
-    .from("orders")
-    .select("*, items:order_items(*)")
-    .eq("id", orderId)
-    .single()
-  
-  if (error) {
-    console.error("Error fetching order:", error)
-    return null
-  }
-  
-  // Get product images for items that don't have them stored
-  const productIds = data.items?.filter((item: any) => item.product_id && !item.product_image).map((item: any) => item.product_id) || []
+  const orderResult = await pgQuery<any>("SELECT * FROM public.orders WHERE id = $1 LIMIT 1", [orderId])
+  const data = orderResult.rows[0]
+  if (!data) return null
+
+  const itemsResult = await pgQuery<any>("SELECT * FROM public.order_items WHERE order_id = $1", [orderId])
+  const items = itemsResult.rows
+
+  const productIds = items.filter((item: any) => item.product_id && !item.product_image).map((item: any) => item.product_id)
   let productImages: Record<string, string> = {}
-  
+
   if (productIds.length > 0) {
-    const { data: products } = await supabase
-      .from("products")
-      .select("id, main_image")
-      .in("id", productIds)
-    
-    if (products) {
-      productImages = Object.fromEntries(products.map(p => [p.id, p.main_image]))
-    }
+    const productsResult = await pgQuery<{ id: string; main_image: string }>(
+      "SELECT id, main_image FROM public.products WHERE id = ANY($1::uuid[])",
+      [productIds],
+    )
+    productImages = Object.fromEntries(productsResult.rows.map((p) => [p.id, p.main_image]))
   }
-  
+
   return {
     id: data.id,
     orderNumber: data.order_number,
@@ -431,7 +365,7 @@ export async function getOrderById(orderId: string) {
     tax: data.tax,
     createdAt: data.created_at,
     updatedAt: data.updated_at,
-    items: data.items?.map((item: any) => ({
+    items: items.map((item: any) => ({
       id: item.id,
       quantity: item.quantity,
       price: item.unit_price,
@@ -445,7 +379,7 @@ export async function getOrderById(orderId: string) {
         size: item.variant_size,
         color: item.variant_color ? { name: item.variant_color, value: item.variant_color } : null,
       },
-    })) || [],
+    })),
     customer: {
       firstName: data.customer_name?.split(" ")[0] || "Guest",
       lastName: data.customer_name?.split(" ").slice(1).join(" ") || "",

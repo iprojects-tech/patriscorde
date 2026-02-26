@@ -22,10 +22,8 @@ function SuccessContent() {
   const [isLoading, setIsLoading] = useState(true)
 
   useEffect(() => {
-    // Clear cart on successful checkout
     clearCart()
 
-    // Fetch the latest order info from Supabase
     setIsLoading(true)
     getLatestOrderInfo().then((result) => {
       if (result.orderNumber) {
@@ -70,21 +68,18 @@ function SuccessContent() {
         </Reveal>
 
         <Reveal delay={0.1}>
-          <h1 className="font-serif text-4xl md:text-5xl mb-4">
-            {isPending ? "Pedido registrado" : "Gracias"}
-          </h1>
+          <h1 className="font-serif text-4xl md:text-5xl mb-4">{isPending ? "Payment Pending" : "Thank You"}</h1>
         </Reveal>
 
         <Reveal delay={0.2}>
           <p className="text-muted-foreground mb-2">
-            {isPending 
-              ? "Tu pedido está pendiente de pago"
-              : "Tu pago ha sido confirmado"
-            }
+            {isPending ? "Your order is pending payment" : "Your payment has been confirmed"}
           </p>
-          <p className="text-sm text-muted-foreground">
-            Número de orden: <span className="font-medium text-foreground">{orderNumber}</span>
-          </p>
+          {!isPending && (
+            <p className="text-sm text-muted-foreground">
+              Order number: <span className="font-medium text-foreground">{orderNumber}</span>
+            </p>
+          )}
         </Reveal>
 
         <Reveal delay={0.3}>
@@ -93,78 +88,73 @@ function SuccessContent() {
 
         <Reveal delay={0.4}>
           <div className="text-left space-y-6 mb-10">
-            {/* Cash payment instructions */}
             {paymentMethod === "cash" && (
               <div className="flex items-start gap-4 p-5 border border-amber-200 bg-amber-50">
-                <Banknote className="h-5 w-5 text-amber-600 flex-shrink-0 mt-0.5" strokeWidth={1.5} />
+                <Banknote className="h-5 w-5 text-amber-600 shrink-0 mt-0.5" strokeWidth={1.5} />
                 <div>
-                  <p className="text-sm font-medium text-amber-800">Completa tu pago en efectivo</p>
+                  <p className="text-sm font-medium text-amber-800">Complete your cash payment</p>
                   <p className="text-sm text-amber-700 mt-1">
-                    Te enviamos el código de pago a tu correo. Preséntalo en OXXO, 7-Eleven o tiendas participantes.
-                    <strong className="block mt-2">Tienes 48 horas para completar el pago.</strong>
+                    We sent payment instructions to your email. Present the reference at OXXO or participating stores.
+                    <strong className="block mt-2">You have 48 hours to complete payment.</strong>
                   </p>
                 </div>
               </div>
             )}
 
-            {/* Transfer payment instructions */}
             {paymentMethod === "transfer" && (
               <div className="flex items-start gap-4 p-5 border border-blue-200 bg-blue-50">
-                <Building2 className="h-5 w-5 text-blue-600 flex-shrink-0 mt-0.5" strokeWidth={1.5} />
+                <Building2 className="h-5 w-5 text-blue-600 shrink-0 mt-0.5" strokeWidth={1.5} />
                 <div>
-                  <p className="text-sm font-medium text-blue-800">Completa tu transferencia SPEI</p>
+                  <p className="text-sm font-medium text-blue-800">Complete your SPEI transfer</p>
                   <p className="text-sm text-blue-700 mt-1">
-                    Te enviamos los datos bancarios a tu correo. Realiza la transferencia desde tu banca en línea.
-                    <strong className="block mt-2">El pago se confirma en minutos.</strong>
+                    We sent transfer details to your email. Complete the transfer from your banking app.
+                    <strong className="block mt-2">Payment is confirmed within minutes.</strong>
                   </p>
                 </div>
               </div>
             )}
 
-            {/* Confirmation email */}
             <div className="flex items-start gap-4 p-5 border border-border">
-              <Package className="h-5 w-5 text-muted-foreground flex-shrink-0 mt-0.5" strokeWidth={1.5} />
+              <Package className="h-5 w-5 text-muted-foreground shrink-0 mt-0.5" strokeWidth={1.5} />
               <div>
-                <p className="text-sm font-medium">Correo de confirmación enviado</p>
-                <p className="text-sm text-muted-foreground mt-1">
-                  Te hemos enviado los detalles de tu pedido a tu correo electrónico
-                </p>
+                <p className="text-sm font-medium">Confirmation email sent</p>
+                <p className="text-sm text-muted-foreground mt-1">We sent your order details to your email</p>
               </div>
             </div>
 
             <div className="p-5 bg-muted/30">
               <h3 className="text-xs font-medium tracking-[0.15em] uppercase mb-3">
-                {isPending ? "Siguientes pasos" : "¿Qué sigue?"}
+                {isPending ? "Next Steps" : "What's Next?"}
               </h3>
               <ul className="space-y-3 text-sm text-muted-foreground">
                 {isPending ? (
                   <>
                     <li className="flex items-start gap-3">
-                      <span className="w-5 h-5 bg-amber-500 text-white flex items-center justify-center text-xs flex-shrink-0 mt-0.5">1</span>
-                      <span>Completa el pago siguiendo las instrucciones en tu correo</span>
+                      <span className="w-5 h-5 bg-amber-500 text-white flex items-center justify-center text-xs shrink-0 mt-0.5">1</span>
+                      <span>Complete payment using the instructions sent to your email</span>
                     </li>
                     <li className="flex items-start gap-3">
-                      <span className="w-5 h-5 bg-muted flex items-center justify-center text-xs flex-shrink-0 mt-0.5">2</span>
-                      <span>Recibirás confirmación cuando se verifique tu pago</span>
+                      <span className="w-5 h-5 bg-muted flex items-center justify-center text-xs shrink-0 mt-0.5">2</span>
+                      <span>You will receive confirmation once your payment is verified</span>
                     </li>
                     <li className="flex items-start gap-3">
-                      <span className="w-5 h-5 bg-muted flex items-center justify-center text-xs flex-shrink-0 mt-0.5">3</span>
-                      <span>Tu pedido se enviará una vez confirmado el pago</span>
+                      <span className="w-5 h-5 bg-muted flex items-center justify-center text-xs shrink-0 mt-0.5">3</span>
+                      <span>Your order will ship after payment is confirmed</span>
                     </li>
                   </>
                 ) : (
                   <>
                     <li className="flex items-start gap-3">
-                      <span className="w-5 h-5 bg-foreground text-background flex items-center justify-center text-xs flex-shrink-0 mt-0.5">1</span>
-                      <span>Estamos preparando tu pedido para envío</span>
+                      <span className="w-5 h-5 bg-foreground text-background flex items-center justify-center text-xs shrink-0 mt-0.5">1</span>
+                      <span>We are preparing your order for shipping</span>
                     </li>
                     <li className="flex items-start gap-3">
-                      <span className="w-5 h-5 bg-muted flex items-center justify-center text-xs flex-shrink-0 mt-0.5">2</span>
-                      <span>Recibirás el número de rastreo por correo</span>
+                      <span className="w-5 h-5 bg-muted flex items-center justify-center text-xs shrink-0 mt-0.5">2</span>
+                      <span>You will receive a tracking number by email</span>
                     </li>
                     <li className="flex items-start gap-3">
-                      <span className="w-5 h-5 bg-muted flex items-center justify-center text-xs flex-shrink-0 mt-0.5">3</span>
-                      <span>Tiempo estimado de entrega: 3-5 días hábiles</span>
+                      <span className="w-5 h-5 bg-muted flex items-center justify-center text-xs shrink-0 mt-0.5">3</span>
+                      <span>Estimated delivery: 3-5 business days</span>
                     </li>
                   </>
                 )}
@@ -177,7 +167,7 @@ function SuccessContent() {
           <div className="flex flex-col sm:flex-row gap-4 justify-center">
             <Button asChild className="h-12 px-8 text-xs font-medium tracking-[0.15em] uppercase">
               <Link href="/shop">
-                Seguir comprando
+                Continue Shopping
                 <ArrowRight className="h-4 w-4 ml-2" strokeWidth={1.5} />
               </Link>
             </Button>
@@ -186,9 +176,9 @@ function SuccessContent() {
 
         <Reveal delay={0.6}>
           <p className="text-xs text-muted-foreground mt-8">
-            ¿Tienes preguntas sobre tu pedido?{" "}
+            Need help with your order?{" "}
             <Link href="/contact" className="underline underline-offset-4 hover:text-foreground transition-colors">
-              Contáctanos
+              Contact us
             </Link>
           </p>
         </Reveal>
@@ -199,11 +189,13 @@ function SuccessContent() {
 
 export default function CheckoutSuccessPage() {
   return (
-    <Suspense fallback={
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="animate-spin w-8 h-8 border-2 border-foreground/20 border-t-foreground rounded-full" />
-      </div>
-    }>
+    <Suspense
+      fallback={
+        <div className="min-h-screen flex items-center justify-center">
+          <div className="animate-spin w-8 h-8 border-2 border-foreground/20 border-t-foreground rounded-full" />
+        </div>
+      }
+    >
       <SuccessContent />
     </Suspense>
   )

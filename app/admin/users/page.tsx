@@ -42,7 +42,6 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
-import { createClient } from "@/lib/supabase/client"
 import { useAdminAuth } from "@/store/admin-auth"
 import { premiumEasing } from "@/lib/motion"
 import { toast } from "sonner"
@@ -89,8 +88,6 @@ export default function UsersPage() {
   const [formRole, setFormRole] = useState<AdminRole>("manager")
   const [formPassword, setFormPassword] = useState("")
 
-  const supabase = createClient()
-
   // Redirect managers - only admins can access this page
   useEffect(() => {
     if (currentUser && currentUser.role !== "admin") {
@@ -109,13 +106,10 @@ export default function UsersPage() {
   const fetchUsers = async () => {
     setIsLoading(true)
     try {
-      const { data, error } = await supabase
-        .from("admin_users")
-        .select("*")
-        .order("created_at", { ascending: false })
-
-      if (error) throw error
-      setUsers(data || [])
+      const response = await fetch("/api/admin/users", { cache: "no-store" })
+      const payload = await response.json()
+      if (!response.ok) throw new Error(payload?.error || "Failed to load users")
+      setUsers(payload?.users || [])
     } catch (error) {
       console.error("Failed to fetch users:", error)
       toast.error("Failed to load users")

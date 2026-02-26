@@ -65,7 +65,7 @@ export default function EditCategoryPage() {
 
 const [allProducts, setAllProducts] = useState<any[]>([])
 
-  // Load category data from Supabase
+  // Load category data from server actions
   useEffect(() => {
     const fetchData = async () => {
       const [cats, prods] = await Promise.all([

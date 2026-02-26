@@ -1,26 +1,27 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useMemo } from "react"
 import Link from "next/link"
 import Image from "next/image"
 
 import { useRouter } from "next/navigation"
 import { motion, AnimatePresence } from "framer-motion"
-import { ChevronLeft, ChevronRight, Check, Lock, CreditCard, Truck, Package, AlertCircle, RefreshCw, Loader2, Banknote, Building } from "lucide-react"
+import { ChevronLeft, ChevronRight, Check, Lock, CreditCard, Truck, Package, AlertCircle, RefreshCw, Loader2, Banknote, Building, Clock } from "lucide-react"
 import { toast } from "sonner"
 import { CheckoutHeader } from "@/components/layout/checkout-header"
-import { Footer } from "@/components/layout/footer"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Separator } from "@/components/ui/separator"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { Checkbox } from "@/components/ui/checkbox"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { useCartStore } from "@/store/cart"
 import { formatPrice } from "@/lib/utils"
 import { premiumEasing } from "@/lib/motion"
 import OrderConfirmation from "@/components/checkout/order-confirmation"
-import { createConektaOxxoOrder, createConektaSpeiOrder } from "@/app/actions/conekta"
+import { OfficialBarcode } from "@/components/checkout/official-barcode"
+import { createMercadoPagoCardOrder, createMercadoPagoCashOrder, createMercadoPagoSpeiOrder } from "@/app/actions/mercadopago"
 import { useCustomerAuth } from "@/store/customer-auth"
 
 type CheckoutStep = "information" | "shipping" | "payment"
@@ -30,6 +31,69 @@ const steps: { id: CheckoutStep; label: string }[] = [
   { id: "shipping", label: "Shipping" },
   { id: "payment", label: "Payment" },
 ]
+
+interface PostalLocation {
+  state: string
+  city: string
+  neighborhood: string
+}
+
+function mapCardBrandToMpMethodId(brand: "visa" | "mastercard" | "amex" | null): string | null {
+  if (brand === "visa") return "visa"
+  if (brand === "mastercard") return "master"
+  if (brand === "amex") return "amex"
+  return null
+}
+
+function isLikelyImageUrl(url: string | null): boolean {
+  if (!url) return false
+  const lower = url.toLowerCase()
+  return (
+    lower.endsWith(".png") ||
+    lower.endsWith(".jpg") ||
+    lower.endsWith(".jpeg") ||
+    lower.endsWith(".webp") ||
+    lower.includes("barcode") ||
+    lower.includes("ticket")
+  )
+}
+
+function normalizeAbsoluteUrl(url: string | null | undefined): string | null {
+  if (!url) return null
+  const trimmed = url.trim()
+  if (!trimmed) return null
+  try {
+    const parsed = new URL(trimmed)
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+      return parsed.toString()
+    }
+  } catch {
+    return null
+  }
+  return null
+}
+
+async function ensureMercadoPagoSdkLoaded(): Promise<void> {
+  if (typeof window === "undefined") return
+  if ((window as any).MercadoPago) return
+
+  await new Promise<void>((resolve, reject) => {
+    const existingScript = document.querySelector('script[data-mp-sdk=\"true\"]') as HTMLScriptElement | null
+    if (existingScript) {
+      existingScript.addEventListener("load", () => resolve(), { once: true })
+      existingScript.addEventListener("error", () => reject(new Error("SDK load error")), { once: true })
+      return
+    }
+
+    const script = document.createElement("script")
+    script.src = "https://sdk.mercadopago.com/js/v2"
+    script.async = true
+    script.setAttribute("data-mp-sdk", "true")
+    script.onload = () => resolve()
+    script.onerror = () => reject(new Error("SDK load error"))
+    document.body.appendChild(script)
+  })
+}
 
 export default function CheckoutPage() {
   const router = useRouter()
@@ -55,9 +119,34 @@ export default function CheckoutPage() {
   const [state, setState] = useState("")
   const [country, setCountry] = useState("Mexico")
   const [postalCode, setPostalCode] = useState("")
+  const [neighborhood, setNeighborhood] = useState("")
+  const [locationRecords, setLocationRecords] = useState<PostalLocation[]>([])
+  const [isLoadingCities, setIsLoadingCities] = useState(false)
   const [phone, setPhone] = useState("")
   const [shippingMethod, setShippingMethod] = useState<"standard" | "express">("standard")
   const [saveInfo, setSaveInfo] = useState(true)
+
+  const stateOptions = useMemo(
+    () => Array.from(new Set(locationRecords.map((item) => item.state))),
+    [locationRecords],
+  )
+
+  const cityOptions = useMemo(
+    () => Array.from(new Set(locationRecords.filter((item) => item.state === state).map((item) => item.city))),
+    [locationRecords, state],
+  )
+
+  const neighborhoodOptions = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          locationRecords
+            .filter((item) => item.state === state && item.city === city)
+            .map((item) => item.neighborhood),
+        ),
+      ),
+    [locationRecords, state, city],
+  )
   
   // Payment state
   const [paymentMethod, setPaymentMethod] = useState<"card" | "cash" | "transfer" | null>(null)
@@ -75,12 +164,15 @@ export default function CheckoutPage() {
   // OXXO state
   const [oxxoReference, setOxxoReference] = useState<string | null>(null)
   const [oxxoBarcodeUrl, setOxxoBarcodeUrl] = useState<string | null>(null)
+  const [oxxoBarcodeContent, setOxxoBarcodeContent] = useState<string | null>(null)
+  const [oxxoPaymentUrl, setOxxoPaymentUrl] = useState<string | null>(null)
   const [oxxoExpiresAt, setOxxoExpiresAt] = useState<string | null>(null)
   const [oxxoOrderNumber, setOxxoOrderNumber] = useState<string | null>(null)
 
   // SPEI state
   const [speiClabe, setSpeiClabe] = useState<string | null>(null)
   const [speiBank, setSpeiBank] = useState<string | null>(null)
+  const [speiPaymentUrl, setSpeiPaymentUrl] = useState<string | null>(null)
   const [speiExpiresAt, setSpeiExpiresAt] = useState<string | null>(null)
   const [speiOrderNumber, setSpeiOrderNumber] = useState<string | null>(null)
   
@@ -89,7 +181,7 @@ export default function CheckoutPage() {
   const tax = Math.round(subtotal * 0.16)
   const total = subtotal + shipping + tax
 
-  // MSI options based on amount (Conekta minimums)
+  // MSI options based on amount
   const msiOptions = (() => {
     const totalPesos = total / 100
     const options: { value: number; label: string }[] = [
@@ -119,6 +211,8 @@ export default function CheckoutPage() {
       setPhone(user.phone || "")
       setAddress(user.address || "")
       setCity(user.city || "")
+      setState(user.state || "")
+      setNeighborhood(user.neighborhood || "")
       setCountry(user.country || "Mexico")
       setPostalCode(user.postal_code || "")
       setHasPrefilledFromAccount(true)
@@ -126,10 +220,58 @@ export default function CheckoutPage() {
   }, [isAuthenticated, user, hasPrefilledFromAccount])
 
   useEffect(() => {
-    if (items.length === 0 && !isComplete && !oxxoReference && !speiClabe) {
+    if (items.length === 0 && !isComplete && !oxxoOrderNumber && !speiOrderNumber) {
       router.push("/shop")
     }
-  }, [items, router, isComplete, oxxoReference, speiClabe])
+  }, [items, router, isComplete, oxxoOrderNumber, speiOrderNumber])
+
+  // Load cities from postal code
+  useEffect(() => {
+    const normalizedPostalCode = postalCode.replace(/\D/g, "").slice(0, 5)
+    if (!normalizedPostalCode || normalizedPostalCode.length !== 5) {
+      setLocationRecords([])
+      return
+    }
+
+    const controller = new AbortController()
+    setIsLoadingCities(true)
+
+    fetch(`/api/location/mx-postal-code?postalCode=${normalizedPostalCode}`, {
+      signal: controller.signal,
+      cache: "no-store",
+    })
+      .then(async (response) => {
+        if (!response.ok) return []
+        const data = await response.json()
+        return Array.isArray(data?.locations) ? data.locations : []
+      })
+      .then((locations: PostalLocation[]) => {
+        setLocationRecords(locations)
+      })
+      .catch(() => {
+        setLocationRecords([])
+      })
+      .finally(() => {
+        setIsLoadingCities(false)
+      })
+
+    return () => controller.abort()
+  }, [postalCode])
+
+  useEffect(() => {
+    if (stateOptions.length === 0) return
+    setState((previous) => (stateOptions.includes(previous) ? previous : stateOptions[0]))
+  }, [stateOptions])
+
+  useEffect(() => {
+    if (cityOptions.length === 0) return
+    setCity((previous) => (cityOptions.includes(previous) ? previous : cityOptions[0]))
+  }, [cityOptions])
+
+  useEffect(() => {
+    if (neighborhoodOptions.length === 0) return
+    setNeighborhood((previous) => (neighborhoodOptions.includes(previous) ? previous : neighborhoodOptions[0]))
+  }, [neighborhoodOptions])
 
   const currentStepIndex = steps.findIndex((s) => s.id === currentStep)
 
@@ -170,9 +312,16 @@ export default function CheckoutPage() {
       toast.error("Please select a payment method")
       return
     }
-    if (paymentMethod === "card") {
-      // Local form - not connected to Conekta yet
-      toast.error("Card payments are coming soon. Please use OXXO or Bank Transfer.")
+
+    // Validate all required fields
+    if (!email.trim() || !firstName.trim() || !lastName.trim() || !address.trim() || !city.trim() || !state.trim() || !postalCode.trim() || !phone.trim()) {
+      toast.error("Please complete all required fields")
+      return
+    }
+
+    const phoneDigits = phone.replace(/\D/g, "")
+    if (phoneDigits.length < 10) {
+      toast.error("Please enter a valid 10-digit phone number")
       return
     }
 
@@ -196,15 +345,84 @@ export default function CheckoutPage() {
         name: `${firstName} ${lastName}`,
         address: address + (apartment ? `, ${apartment}` : ""),
         city,
-        state: state || city,
+        state,
         country,
         postalCode,
+        neighborhood,
         phone: phone.replace(/\D/g, ""),
       }
 
-      if (paymentMethod === "cash") {
-        // OXXO cash payment
-        const result = await createConektaOxxoOrder({
+      if (paymentMethod === "card") {
+        const publicKey = process.env.NEXT_PUBLIC_MERCADO_PAGO_PUBLIC_KEY
+        if (!publicKey) {
+          setIsProcessing(false)
+          setPaymentFailed(true)
+          setErrorMessage("NEXT_PUBLIC_MERCADO_PAGO_PUBLIC_KEY is not configured.")
+          toast.error("Payment configuration is incomplete.")
+          return
+        }
+
+        const numberDigits = cardNumber.replace(/\s/g, "")
+        const [expMonthRaw, expYearRaw] = cardExpiry.split("/")
+        const expMonth = (expMonthRaw || "").trim()
+        const expYear2 = (expYearRaw || "").trim()
+        const expYear = expYear2.length === 2 ? `20${expYear2}` : expYear2
+
+        if (!numberDigits || !cardName || !expMonth || !expYear || !cardCvv) {
+          setIsProcessing(false)
+          setPaymentFailed(true)
+          setErrorMessage("Please complete all card fields.")
+          toast.error("Please complete all card fields.")
+          return
+        }
+
+        await ensureMercadoPagoSdkLoaded()
+        const MercadoPago = (window as any).MercadoPago
+        if (!MercadoPago) {
+          setIsProcessing(false)
+          setPaymentFailed(true)
+          setErrorMessage("Could not load Mercado Pago SDK.")
+          toast.error("Could not load Mercado Pago SDK.")
+          return
+        }
+
+        const mp = new MercadoPago(publicKey, { locale: "es-MX" })
+
+        const tokenResult = await mp.createCardToken({
+          cardNumber: numberDigits,
+          cardholderName: cardName,
+          cardExpirationMonth: expMonth,
+          cardExpirationYear: expYear,
+          securityCode: cardCvv,
+        })
+
+        if (!tokenResult?.id) {
+          const tokenError =
+            tokenResult?.cause?.[0]?.description ||
+            tokenResult?.message ||
+            "Could not tokenize card data."
+          setIsProcessing(false)
+          setPaymentFailed(true)
+          setErrorMessage(tokenError)
+          toast.error(tokenError)
+          return
+        }
+
+        const fallbackMethodId = mapCardBrandToMpMethodId(detectCardBrand(cardNumber))
+        const paymentMethodId =
+          tokenResult.payment_method_id ||
+          tokenResult.card?.payment_method?.id ||
+          fallbackMethodId
+
+        if (!paymentMethodId) {
+          setIsProcessing(false)
+          setPaymentFailed(true)
+          setErrorMessage("Could not detect card brand for payment.")
+          toast.error("Could not detect card brand for payment.")
+          return
+        }
+
+        const result = await createMercadoPagoCardOrder({
           items: cartItems,
           customerEmail: email,
           customerPhone: phone.replace(/\D/g, ""),
@@ -214,6 +432,39 @@ export default function CheckoutPage() {
           shippingCost: shipping,
           tax,
           total,
+          cardToken: tokenResult.id,
+          paymentMethodId,
+          installments: selectedInstallments > 0 ? selectedInstallments : 1,
+          issuerId: tokenResult.issuer_id ? String(tokenResult.issuer_id) : undefined,
+        })
+
+        if (result.error) {
+          setIsProcessing(false)
+          setPaymentFailed(true)
+          setErrorMessage(result.error)
+          toast.error(result.error)
+          return
+        }
+
+        setIsComplete(true)
+        clearCart()
+        setIsProcessing(false)
+        router.push("/checkout/success?method=card")
+        return
+      }
+
+      if (paymentMethod === "cash") {
+        const result = await createMercadoPagoCashOrder({
+          items: cartItems,
+          customerEmail: email,
+          customerPhone: phone.replace(/\D/g, ""),
+          customerName: `${firstName} ${lastName}`,
+          shipping: shippingData,
+          subtotal,
+          shippingCost: shipping,
+          tax,
+          total,
+          cashMethodId: selectedCashStore?.paymentMethodId,
         })
 
         if (result.error) {
@@ -227,15 +478,21 @@ export default function CheckoutPage() {
         if (result.success) {
           setOxxoReference(result.reference || null)
           setOxxoBarcodeUrl(result.barcodeUrl || null)
+          setOxxoBarcodeContent(result.barcodeContent || null)
+          setOxxoPaymentUrl(normalizeAbsoluteUrl(result.paymentUrl) || null)
           setOxxoExpiresAt(result.expiresAt || null)
           setOxxoOrderNumber(result.orderNumber || null)
           clearCart()
           setIsProcessing(false)
+          if (!result.reference && !result.barcodeUrl && !result.paymentUrl) {
+            router.push("/checkout/success?method=cash")
+          }
           return
         }
-      } else if (paymentMethod === "transfer") {
-        // SPEI bank transfer
-        const result = await createConektaSpeiOrder({
+      }
+
+      if (paymentMethod === "transfer") {
+        const result = await createMercadoPagoSpeiOrder({
           items: cartItems,
           customerEmail: email,
           customerPhone: phone.replace(/\D/g, ""),
@@ -258,10 +515,14 @@ export default function CheckoutPage() {
         if (result.success) {
           setSpeiClabe(result.clabe || null)
           setSpeiBank(result.bank || null)
+          setSpeiPaymentUrl(result.paymentUrl || null)
           setSpeiExpiresAt(result.expiresAt || null)
           setSpeiOrderNumber(result.orderNumber || null)
           clearCart()
           setIsProcessing(false)
+          if (!result.clabe && !result.reference) {
+            router.push("/checkout/success?method=transfer")
+          }
           return
         }
       }
@@ -279,27 +540,48 @@ export default function CheckoutPage() {
   }
 
   // OXXO reference confirmation screen
-  if (oxxoReference) {
+  if (oxxoOrderNumber) {
     const expiryDate = oxxoExpiresAt ? new Date(oxxoExpiresAt) : null
+    const cashMethodId = selectedCashStore?.paymentMethodId
+    const cashInstructions =
+      cashMethodId === "bancomer"
+        ? [
+            "Go to a BBVA ATM or BBVA branch",
+            "Select payments/services and choose cash payment",
+            "Provide the payment reference shown above",
+            `Pay exactly ${formatPrice(total)} and keep your receipt`,
+          ]
+        : cashMethodId === "paycash"
+        ? [
+            "Go to a PayCash participating store",
+            "Tell the cashier you want to make a PayCash payment",
+            "Provide the payment reference shown above",
+            `Pay exactly ${formatPrice(total)} in cash`,
+          ]
+        : [
+            "Go to OXXO",
+            "Tell the cashier you want to make a cash payment",
+            "Provide the payment reference shown above",
+            `Pay exactly ${formatPrice(total)} in cash`,
+          ]
     return (
-      <div className="min-h-screen flex items-start justify-center pt-6">
+      <div className="min-h-screen flex items-center justify-center py-6">
         <div className="max-w-lg w-full px-6 py-4 text-center">
           <motion.div
             initial={{ scale: 0 }}
             animate={{ scale: 1 }}
             transition={{ duration: 0.5, ease: premiumEasing, delay: 0.2 }}
-            className="w-12 h-12 mx-auto mb-4 border-2 border-foreground flex items-center justify-center"
+            className="w-12 h-12 mx-auto mb-4 bg-amber-500 text-white flex items-center justify-center"
           >
-            <Check className="h-5 w-5" strokeWidth={1.5} />
+            <Clock className="h-5 w-5" strokeWidth={1.5} />
           </motion.div>
 
-          <h1 className="font-serif text-2xl mb-1">Order Created</h1>
+          <h1 className="font-serif text-2xl mb-1">Payment Pending</h1>
           <p className="text-sm text-muted-foreground">
             {selectedCashStore
-              ? <>Pay in cash at <strong className="text-foreground">{selectedCashStore.name}</strong></>
-              : "Pay in cash at any convenience store"
+              ? <>{selectedCashStore.name} payment created and waiting for confirmation</>
+              : "Offline payment created and waiting for confirmation"
             }
-            {oxxoOrderNumber && <span> &middot; Order #{oxxoOrderNumber}</span>}
           </p>
 
           <Separator className="my-5 bg-border" />
@@ -309,7 +591,10 @@ export default function CheckoutPage() {
             {selectedCashStore && (
               <div className="border border-border p-3 flex items-center justify-center">
                 {selectedCashStore.logo ? (
-                  <div className="h-10 flex items-center justify-center">
+                  <div
+                    className="h-10 flex items-center justify-center px-3 rounded-sm"
+                    style={{ backgroundColor: selectedCashStore.logoBackground || "transparent" }}
+                  >
                     <img
                       src={selectedCashStore.logo}
                       alt={selectedCashStore.name}
@@ -333,9 +618,11 @@ export default function CheckoutPage() {
                 <h3 className="text-xs font-medium tracking-[0.15em] uppercase">Payment Reference</h3>
                 <button
                   onClick={() => {
+                    if (!oxxoReference) return
                     navigator.clipboard.writeText(oxxoReference)
                     toast.success("Reference copied")
                   }}
+                  disabled={!oxxoReference}
                   className="text-xs text-muted-foreground hover:text-foreground transition-colors underline underline-offset-4"
                 >
                   Copy
@@ -343,12 +630,29 @@ export default function CheckoutPage() {
               </div>
               <div className="bg-muted/30 p-3 text-center">
                 <p className="font-mono text-lg tracking-[0.2em] font-bold select-all">
-                  {oxxoReference}
+                  {oxxoReference || "Generandose..."}
                 </p>
               </div>
-              {oxxoBarcodeUrl && (
+              {oxxoPaymentUrl && !oxxoBarcodeUrl && !oxxoBarcodeContent && (
+                <div className="mt-3 pt-3 border-t border-border text-center">
+                  <a
+                    href={oxxoPaymentUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center justify-center h-9 px-4 text-xs tracking-[0.12em] uppercase border border-foreground text-foreground hover:bg-foreground hover:text-background transition-colors"
+                  >
+                    Ver Comprobante Oficial
+                  </a>
+                </div>
+              )}
+              {oxxoBarcodeUrl && isLikelyImageUrl(oxxoBarcodeUrl) && (
                 <div className="mt-3 pt-3 border-t border-border text-center">
                   <img src={oxxoBarcodeUrl} alt="Cash payment barcode" className="mx-auto h-12 object-contain" />
+                </div>
+              )}
+              {!oxxoBarcodeUrl && oxxoBarcodeContent && (
+                <div className="mt-3 pt-3 border-t border-border text-center">
+                  <OfficialBarcode value={oxxoBarcodeContent} className="mx-auto h-14 w-full max-w-90" />
                 </div>
               )}
             </div>
@@ -370,16 +674,15 @@ export default function CheckoutPage() {
               <Separator className="my-3 bg-border" />
               <h3 className="text-xs font-medium tracking-[0.15em] uppercase mb-2">How to pay</h3>
               <ol className="space-y-1 text-xs text-muted-foreground list-decimal list-inside">
-                <li>Go to your nearest <strong className="text-foreground">{selectedCashStore?.name || "convenience store"}</strong></li>
-                <li>Tell the cashier you want to make a <strong className="text-foreground">cash payment</strong></li>
-                <li>Provide the reference number above</li>
-                <li>Pay <strong className="text-foreground">{formatPrice(total)}</strong> in cash</li>
+                {cashInstructions.map((instruction) => (
+                  <li key={instruction}>{instruction}</li>
+                ))}
               </ol>
             </div>
 
             {/* Notice */}
             <div className="flex items-start gap-3 p-3 bg-muted/30 text-xs">
-              <AlertCircle className="h-4 w-4 text-muted-foreground flex-shrink-0 mt-0.5" />
+              <AlertCircle className="h-4 w-4 text-muted-foreground shrink-0.5" />
               <p className="text-muted-foreground leading-relaxed">
                 Payment confirms within 1-2 business days. Confirmation email will be sent to <strong className="text-foreground">{email}</strong>.
               </p>
@@ -404,24 +707,23 @@ export default function CheckoutPage() {
   }
 
   // SPEI confirmation screen
-  if (speiClabe) {
+  if (speiOrderNumber) {
     const expiryDate = speiExpiresAt ? new Date(speiExpiresAt) : null
     return (
-      <div className="min-h-screen flex items-start justify-center pt-6">
+      <div className="min-h-screen flex items-center justify-center py-6">
         <div className="max-w-lg w-full px-6 py-4 text-center">
           <motion.div
             initial={{ scale: 0 }}
             animate={{ scale: 1 }}
             transition={{ duration: 0.5, ease: premiumEasing, delay: 0.2 }}
-            className="w-12 h-12 mx-auto mb-4 border-2 border-foreground flex items-center justify-center"
+            className="w-12 h-12 mx-auto mb-4 bg-amber-500 text-white flex items-center justify-center"
           >
-            <Check className="h-5 w-5" strokeWidth={1.5} />
+            <Clock className="h-5 w-5" strokeWidth={1.5} />
           </motion.div>
 
-          <h1 className="font-serif text-2xl mb-1">Order Created</h1>
+          <h1 className="font-serif text-2xl mb-1">Payment Pending</h1>
           <p className="text-sm text-muted-foreground">
-            Transfer via SPEI to complete your payment
-            {speiOrderNumber && <span> &middot; Order #{speiOrderNumber}</span>}
+            Transfer via SPEI is pending confirmation
           </p>
 
           <Separator className="my-5 bg-border" />
@@ -433,9 +735,11 @@ export default function CheckoutPage() {
                 <h3 className="text-xs font-medium tracking-[0.15em] uppercase">CLABE Number</h3>
                 <button
                   onClick={() => {
+                    if (!speiClabe) return
                     navigator.clipboard.writeText(speiClabe)
                     toast.success("CLABE copied")
                   }}
+                  disabled={!speiClabe}
                   className="text-xs text-muted-foreground hover:text-foreground transition-colors underline underline-offset-4"
                 >
                   Copy
@@ -443,9 +747,21 @@ export default function CheckoutPage() {
               </div>
               <div className="bg-muted/30 p-3 text-center">
                 <p className="font-mono text-lg tracking-[0.15em] font-bold select-all">
-                  {speiClabe}
+                  {speiClabe || "Generandose..."}
                 </p>
               </div>
+              {!speiClabe && speiPaymentUrl && (
+                <div className="mt-3 pt-3 border-t border-border text-center">
+                  <a
+                    href={speiPaymentUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-xs underline underline-offset-4 text-foreground hover:opacity-80 transition-opacity"
+                  >
+                    Open transfer instructions
+                  </a>
+                </div>
+              )}
               {speiBank && (
                 <div className="mt-3 pt-3 border-t border-border flex justify-between items-center">
                   <span className="text-sm text-muted-foreground">Bank</span>
@@ -480,7 +796,7 @@ export default function CheckoutPage() {
 
             {/* Notice */}
             <div className="flex items-start gap-3 p-3 bg-muted/30 text-xs">
-              <AlertCircle className="h-4 w-4 text-muted-foreground flex-shrink-0 mt-0.5" />
+              <AlertCircle className="h-4 w-4 text-muted-foreground shrink-0 mt-0.5" />
               <p className="text-muted-foreground leading-relaxed">
                 SPEI transfers are confirmed within minutes. Confirmation email will be sent to <strong className="text-foreground">{email}</strong>.
               </p>
@@ -529,26 +845,26 @@ export default function CheckoutPage() {
               <h3 className="text-xs font-medium tracking-[0.15em] uppercase mb-3">What you can do</h3>
               <ul className="space-y-3 text-sm text-muted-foreground">
                 <li className="flex items-start gap-3">
-                  <span className="w-5 h-5 bg-muted flex items-center justify-center text-xs flex-shrink-0 mt-0.5">1</span>
+                  <span className="w-5 h-5 bg-muted flex items-center justify-center text-xs shrink-0.5">1</span>
                   <span>Verify your card details are correct</span>
                 </li>
                 <li className="flex items-start gap-3">
-                  <span className="w-5 h-5 bg-muted flex items-center justify-center text-xs flex-shrink-0 mt-0.5">2</span>
+                  <span className="w-5 h-5 bg-muted flex items-center justify-center text-xs shrink-0 mt-0.5">2</span>
                   <span>Make sure you have sufficient funds</span>
                 </li>
                 <li className="flex items-start gap-3">
-                  <span className="w-5 h-5 bg-muted flex items-center justify-center text-xs flex-shrink-0 mt-0.5">3</span>
+                  <span className="w-5 h-5 bg-muted flex items-center justify-center text-xs shrink-0 mt-0.5">3</span>
                   <span>Try with a different card</span>
                 </li>
                 <li className="flex items-start gap-3">
-                  <span className="w-5 h-5 bg-muted flex items-center justify-center text-xs flex-shrink-0 mt-0.5">4</span>
+                  <span className="w-5 h-5 bg-muted flex items-center justify-center text-xs shrink-0 mt-0.5">4</span>
                   <span>Contact your bank if the issue persists</span>
                 </li>
               </ul>
             </div>
             
             <div className="flex items-start gap-4 p-5 bg-muted/30">
-              <Lock className="h-5 w-5 text-muted-foreground flex-shrink-0 mt-0.5" />
+              <Lock className="h-5 w-5 text-muted-foreground shrink-0 mt-0.5" />
               <div>
                 <p className="text-sm font-medium">Your cart is safe</p>
                 <p className="text-sm text-muted-foreground mt-1">
@@ -673,6 +989,12 @@ export default function CheckoutPage() {
                       state={state} setState={setState}
                       country={country} setCountry={setCountry}
                       postalCode={postalCode} setPostalCode={setPostalCode}
+                      neighborhood={neighborhood} setNeighborhood={setNeighborhood}
+                      locationRecords={locationRecords}
+                      isLoadingCities={isLoadingCities}
+                      stateOptions={stateOptions}
+                      cityOptions={cityOptions}
+                      neighborhoodOptions={neighborhoodOptions}
                       phone={phone} setPhone={setPhone}
                       saveInfo={saveInfo} setSaveInfo={setSaveInfo}
                       onContinue={goToNextStep}
@@ -727,7 +1049,7 @@ export default function CheckoutPage() {
                 <div className="space-y-6">
                   {items.map((item) => (
                     <div key={`${item.product.id}-${item.variant?.size || ""}-${item.variant?.color?.name || ""}`} className="flex gap-4">
-                      <div className="relative w-20 h-24 bg-muted flex-shrink-0 overflow-hidden">
+                      <div className="relative w-20 h-24 bg-muted shrink-0 overflow-hidden">
                         <Image
                           src={typeof item.product.main_image === "string" ? item.product.main_image : "/placeholder.jpg"}
                           alt={item.product.name}
@@ -794,7 +1116,16 @@ export default function CheckoutPage() {
           </div>
         </div>
       </main>
-      <Footer />
+      <footer className="border-t border-border/70">
+        <div className="max-w-7xl mx-auto px-6 py-4 flex flex-col sm:flex-row items-center justify-between gap-2 text-[11px] tracking-[0.08em] uppercase text-muted-foreground">
+          <span>Secure Checkout</span>
+          <div className="flex items-center gap-4">
+            <a href="mailto:support@atelier.mx" className="hover:text-foreground transition-colors">
+              Support
+            </a>
+          </div>
+        </div>
+      </footer>
     </>
   )
 }
@@ -804,6 +1135,7 @@ function InformationStep({
   email, setEmail, firstName, setFirstName, lastName, setLastName,
   address, setAddress, apartment, setApartment, city, setCity,
   state, setState, country, setCountry, postalCode, setPostalCode,
+  neighborhood, setNeighborhood, locationRecords, isLoadingCities, stateOptions, cityOptions, neighborhoodOptions,
   phone, setPhone, saveInfo, setSaveInfo, onContinue, isAuthenticated, userEmail,
 }: {
   email: string; setEmail: (v: string) => void
@@ -815,6 +1147,12 @@ function InformationStep({
   state: string; setState: (v: string) => void
   country: string; setCountry: (v: string) => void
   postalCode: string; setPostalCode: (v: string) => void
+  neighborhood: string; setNeighborhood: (v: string) => void
+  locationRecords: PostalLocation[]
+  isLoadingCities: boolean
+  stateOptions: string[]
+  cityOptions: string[]
+  neighborhoodOptions: string[]
   phone: string; setPhone: (v: string) => void
   saveInfo: boolean; setSaveInfo: (v: boolean) => void
   onContinue: () => void
@@ -881,25 +1219,78 @@ function InformationStep({
             className="h-12 border-border bg-transparent focus:border-foreground transition-colors" />
         </div>
 
-        <div className="grid sm:grid-cols-2 gap-4">
+        <div className="grid sm:grid-cols-4 gap-4">
           <div className="space-y-2">
-            <Label htmlFor="city" className="text-xs font-medium tracking-wide uppercase">City</Label>
-            <Input id="city" value={city} onChange={(e) => setCity(e.target.value)}
-              className="h-12 border-border bg-transparent focus:border-foreground transition-colors" />
+            <Label htmlFor="postalCode" className="text-xs font-medium tracking-wide uppercase">Postal Code</Label>
+            <Input id="postalCode" value={postalCode} onChange={(e) => setPostalCode(e.target.value.replace(/\D/g, "").slice(0, 5))}
+              className="h-12 w-full border-border bg-transparent focus:border-foreground transition-colors" />
           </div>
           <div className="space-y-2">
             <Label htmlFor="state" className="text-xs font-medium tracking-wide uppercase">State</Label>
-            <Input id="state" value={state} onChange={(e) => setState(e.target.value)}
-              className="h-12 border-border bg-transparent focus:border-foreground transition-colors" />
+            <Select
+              value={state}
+              onValueChange={setState}
+              disabled={stateOptions.length === 0 || isLoadingCities}
+            >
+              <SelectTrigger id="state" className="!h-12 w-full border-border bg-transparent focus:border-foreground transition-colors">
+                <SelectValue
+                  placeholder={isLoadingCities ? "Loading states..." : "Select a state"}
+                />
+              </SelectTrigger>
+              <SelectContent>
+                {stateOptions.map((option) => (
+                  <SelectItem key={option} value={option}>
+                    {option}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="city" className="text-xs font-medium tracking-wide uppercase">City</Label>
+            <Select
+              value={city}
+              onValueChange={setCity}
+              disabled={cityOptions.length === 0 || isLoadingCities}
+            >
+              <SelectTrigger id="city" className="!h-12 w-full border-border bg-transparent focus:border-foreground transition-colors">
+                <SelectValue
+                  placeholder={isLoadingCities ? "Loading cities..." : "Select a city"}
+                />
+              </SelectTrigger>
+              <SelectContent>
+                {cityOptions.map((option) => (
+                  <SelectItem key={option} value={option}>
+                    {option}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="neighborhood" className="text-xs font-medium tracking-wide uppercase">Neighborhood</Label>
+            <Select
+              value={neighborhood}
+              onValueChange={setNeighborhood}
+              disabled={neighborhoodOptions.length === 0 || isLoadingCities}
+            >
+              <SelectTrigger id="neighborhood" className="!h-12 w-full border-border bg-transparent focus:border-foreground transition-colors">
+                <SelectValue
+                  placeholder={isLoadingCities ? "Loading neighborhoods..." : "Select a neighborhood"}
+                />
+              </SelectTrigger>
+              <SelectContent>
+                {neighborhoodOptions.map((option) => (
+                  <SelectItem key={option} value={option}>
+                    {option}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
         </div>
 
-        <div className="grid sm:grid-cols-2 gap-4">
-          <div className="space-y-2">
-            <Label htmlFor="postalCode" className="text-xs font-medium tracking-wide uppercase">Postal Code</Label>
-            <Input id="postalCode" value={postalCode} onChange={(e) => setPostalCode(e.target.value)}
-              className="h-12 border-border bg-transparent focus:border-foreground transition-colors" />
-          </div>
+        <div className="grid sm:grid-cols-1 gap-4">
           <div className="space-y-2">
             <Label htmlFor="phone" className="text-xs font-medium tracking-wide uppercase">
               Phone <span className="text-destructive">*</span>
@@ -950,7 +1341,7 @@ function InformationStep({
 function ShippingStep({
   shippingMethod, setShippingMethod, onBack, onContinue,
 }: {
-  shippingMethod: string; setShippingMethod: (v: string) => void
+  shippingMethod: "standard" | "express"; setShippingMethod: (v: "standard" | "express") => void
   onBack: () => void; onContinue: () => void
 }) {
   const shippingOptions = [
@@ -965,7 +1356,13 @@ function ShippingStep({
         <p className="text-sm text-muted-foreground">Choose how you want to receive your order.</p>
       </div>
 
-      <RadioGroup value={shippingMethod} onValueChange={setShippingMethod} className="space-y-4">
+      <RadioGroup
+        value={shippingMethod}
+        onValueChange={(value) => {
+          if (value === "standard" || value === "express") setShippingMethod(value)
+        }}
+        className="space-y-4"
+      >
         {shippingOptions.map((option) => (
           <label key={option.id} htmlFor={option.id}
             className={`flex items-center gap-4 p-5 border cursor-pointer transition-all duration-300 ${
@@ -986,7 +1383,7 @@ function ShippingStep({
 
       <div className="border border-border p-5">
         <div className="flex items-start gap-4">
-          <div className="w-10 h-10 bg-muted flex items-center justify-center flex-shrink-0">
+          <div className="w-10 h-10 bg-muted flex items-center justify-center shrink-0">
             <Lock className="h-4 w-4 text-muted-foreground" />
           </div>
           <div>
@@ -1045,37 +1442,16 @@ type CashStore = {
   name: string
   color: string
   letters: string
+  paymentMethodId: "oxxo" | "paycash" | "bancomer"
+  subtitle: string
+  logoBackground?: string
   logo?: string
 }
 
 const CASH_STORES: CashStore[] = [
-  { name: "OXXO", color: "#CC0000", letters: "OXXO", logo: "/images/stores/oxxo.png" },
-  { name: "7-Eleven", color: "#008348", letters: "7-11", logo: "/images/stores/7eleven.png" },
-  { name: "Walmart", color: "#0071CE", letters: "WM", logo: "/images/stores/walmart.png" },
-  { name: "Circle K", color: "#ED1C24", letters: "CK", logo: "/images/stores/circlek.png" },
-  { name: "Farmacias del Ahorro", color: "#00A551", letters: "FA", logo: "/images/stores/farmacias-ahorro.png" },
-  { name: "Bodega Aurrera", color: "#FFC220", letters: "BA", logo: "/images/stores/aurrera.png" },
-  { name: "Sam's Club", color: "#0060A9", letters: "SC", logo: "/images/stores/sams-club.png" },
-  { name: "Soriana", color: "#E31837", letters: "SOR", logo: "/images/stores/soriana.jpg" },
-  { name: "Tiendas Extra", color: "#FF6600", letters: "EX", logo: "/images/stores/extra.png" },
-  { name: "Farmacia Benavides", color: "#0072BC", letters: "FB", logo: "/images/stores/benavides.png" },
-  { name: "Woolworth", color: "#B5121B", letters: "WW", logo: "/images/stores/woolworth.png" },
-  { name: "Del Sol", color: "#FFD100", letters: "DS", logo: "/images/stores/delsol.png" },
-  { name: "Waldo's", color: "#00A550", letters: "WD", logo: "/images/stores/waldos.png" },
-  { name: "Super Kiosko", color: "#FF4E00", letters: "SK", logo: "/images/stores/kiosko.jpg" },
-  { name: "Farmacias Bazar", color: "#1E3A8A", letters: "FBz", logo: "/images/stores/farmacias-bazar.png" },
-  { name: "Yepas", color: "#E91E63", letters: "YP", logo: "/images/stores/yepas.png" },
-  { name: "Farmacias De Dios", color: "#4CAF50", letters: "FD", logo: "/images/stores/de-dios.png" },
-  { name: "Farmacias Nosarco", color: "#3F51B5", letters: "FN", logo: "/images/stores/nosarco.png" },
-  { name: "Farmacias Santa Cruz", color: "#D32F2F", letters: "FSC", logo: "/images/stores/santa-cruz.png" },
-  { name: "Farmacentro", color: "#009688", letters: "FC", logo: "/images/stores/farmacentro.png" },
-  { name: "Farmacias GyM", color: "#673AB7", letters: "FG", logo: "/images/stores/gym.png" },
-  { name: "Farmacias San Francisco de Asis", color: "#795548", letters: "SFA", logo: "/images/stores/san-francisco.png" },
-  { name: "Farmacias Union", color: "#FF5722", letters: "FU", logo: "/images/stores/union.png" },
-  { name: "Farmacias Zapotlan", color: "#607D8B", letters: "FZ", logo: "/images/stores/zapotlan.png" },
-  { name: "Farmatodo", color: "#2196F3", letters: "FT", logo: "/images/stores/farmatodo.png" },
-  { name: "Alsuper", color: "#8BC34A", letters: "AS", logo: "/images/stores/alsuper.jpg" },
-  { name: "ELECZION", color: "#9C27B0", letters: "EL", logo: "/images/stores/eleczion.png" },
+  { name: "OXXO", color: "#CC0000", letters: "OXXO", paymentMethodId: "oxxo", subtitle: "Pay in OXXO stores", logo: "/images/stores/oxxo.png" },
+  { name: "PayCash", color: "#0066CC", letters: "PAY", paymentMethodId: "paycash", subtitle: "PayCash network (7-Eleven, Circle K, Soriana, Extra, etc.)", logo: "/images/stores/paycash.png" },
+  { name: "BBVA", color: "#0033A0", letters: "BBVA", paymentMethodId: "bancomer", subtitle: "BBVA ATM / branch payment", logo: "/images/stores/bbva.png" },
 ]
 
 // SPEI Logo
@@ -1172,7 +1548,7 @@ function PaymentStep({
               onChange={() => setPaymentMethod("card")}
               className="sr-only"
             />
-            <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center flex-shrink-0 ${
+            <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 ${
               paymentMethod === "card" ? "border-foreground" : "border-muted-foreground/40"
             }`}>
               {paymentMethod === "card" && <div className="w-2 h-2 rounded-full bg-foreground" />}
@@ -1280,6 +1656,19 @@ function PaymentStep({
                   </RadioGroup>
                 </div>
               )}
+
+              <div className="pt-2 border-t border-border/70">
+                <div className="h-10 flex items-center justify-center mt-2">
+                  <p className="text-[10px] tracking-[0.18em] uppercase text-muted-foreground">
+                    Powered By
+                  </p>
+                  <img
+                    src="/images/payments/mercadopago.png"
+                    alt="Mercado Pago"
+                    className="h-full w-auto object-contain"
+                  />
+                </div>
+              </div>
             </div>
           )}
         </label>
@@ -1297,7 +1686,7 @@ function PaymentStep({
             tabIndex={0}
             onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") setPaymentMethod("cash") }}
           >
-            <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center flex-shrink-0 ${
+            <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 ${
               paymentMethod === "cash" ? "border-foreground" : "border-muted-foreground/40"
             }`}>
               {paymentMethod === "cash" && <div className="w-2 h-2 rounded-full bg-foreground" />}
@@ -1305,17 +1694,22 @@ function PaymentStep({
             <Banknote className="h-5 w-5 text-muted-foreground" strokeWidth={1.5} />
             <div className="flex-1">
               <p className="text-sm font-medium">Cash</p>
-              <p className="text-xs text-muted-foreground mt-0.5">Pay at any convenience store</p>
+              <p className="text-xs text-muted-foreground mt-0.5">Choose OXXO, PayCash network, or BBVA</p>
             </div>
                     <div className="flex items-center gap-1.5">
                       {previewStores.map((store) => (
                         <span
                           key={store.name}
-                          className="w-7 h-5 rounded-sm flex items-center justify-center overflow-hidden bg-background border border-border"
+                          className="h-5 w-8 rounded-sm flex items-center justify-center overflow-hidden"
+                          style={{ backgroundColor: store.logoBackground || "transparent" }}
                           title={store.name}
                         >
                           {store.logo ? (
-                            <img src={store.logo} alt={store.name} className="w-full h-full object-contain" />
+                            <img
+                              src={store.logo}
+                              alt={store.name}
+                              className="w-full h-full object-contain"
+                            />
                           ) : (
                             <span
                               className="w-full h-full flex items-center justify-center text-white text-[6px] font-bold"
@@ -1334,7 +1728,7 @@ function PaymentStep({
               <p className="text-xs font-medium tracking-[0.15em] uppercase mb-3 text-muted-foreground">
                 Select a store to pay at
               </p>
-              <div className="grid grid-cols-5 sm:grid-cols-7 gap-1.5">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                 {CASH_STORES.map((store) => (
                   <button
                     key={store.name}
@@ -1344,34 +1738,49 @@ function PaymentStep({
                       e.stopPropagation()
                       setSelectedCashStore(store)
                     }}
-                    className={`flex items-center justify-center p-1 border transition-all duration-200 h-11 ${
+                    className={`group border transition-all duration-200 h-20 rounded-sm px-3 py-2 text-left ${
                       selectedCashStore?.name === store.name
-                        ? "border-foreground bg-muted/40 ring-1 ring-foreground"
+                        ? "border-foreground bg-muted/40 ring-1 ring-foreground shadow-sm"
                         : "border-border bg-background hover:border-foreground/40 hover:bg-muted/20"
                     }`}
                     title={store.name}
                   >
-                    {store.logo ? (
-                      <img
-                        src={store.logo}
-                        alt={store.name}
-                        className="max-w-full max-h-8 object-contain"
-                      />
-                    ) : (
-                      <span
-                        className="w-8 h-8 rounded-sm flex items-center justify-center text-white text-[7px] font-bold"
-                        style={{ backgroundColor: store.color }}
+                    <div className="w-full flex items-center gap-3">
+                      <div
+                        className="h-10 w-24 shrink-0 flex items-center justify-center overflow-hidden rounded-sm"
+                        style={{ backgroundColor: store.logoBackground || "transparent" }}
                       >
-                        {store.letters}
-                      </span>
-                    )}
+                        {store.logo ? (
+                          <img
+                            src={store.logo}
+                            alt={store.name}
+                            className="w-[92%] h-[92%] object-contain"
+                          />
+                        ) : (
+                          <span
+                            className="w-8 h-8 rounded-sm flex items-center justify-center text-white text-[7px] font-bold"
+                            style={{ backgroundColor: store.color }}
+                          >
+                            {store.letters}
+                          </span>
+                        )}
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-xs font-medium leading-tight">{store.name}</p>
+                        <p className="text-[10px] text-muted-foreground leading-tight">{store.subtitle}</p>
+                      </div>
+                    </div>
                   </button>
                 ))}
               </div>
               {selectedCashStore && (
                 <div className="mt-3 pt-3 border-t border-border flex items-center gap-2 text-xs text-muted-foreground">
                   <Check className="h-3.5 w-3.5 text-foreground" />
-                  <span>Pay at <strong className="text-foreground">{selectedCashStore.name}</strong></span>
+                  <span>
+                    <strong className="text-foreground">{selectedCashStore.name}</strong>
+                    {" · "}
+                    {selectedCashStore.subtitle}
+                  </span>
                 </div>
               )}
             </div>
@@ -1394,7 +1803,7 @@ function PaymentStep({
               onChange={() => setPaymentMethod("transfer")}
               className="sr-only"
             />
-            <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center flex-shrink-0 ${
+            <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 ${
               paymentMethod === "transfer" ? "border-foreground" : "border-muted-foreground/40"
             }`}>
               {paymentMethod === "transfer" && <div className="w-2 h-2 rounded-full bg-foreground" />}
@@ -1410,7 +1819,7 @@ function PaymentStep({
           {paymentMethod === "transfer" && (
             <div className="border-t border-border px-5 pb-5 pt-4 bg-muted/10">
               <div className="flex items-start gap-3">
-                <div className="w-8 h-8 bg-muted flex items-center justify-center flex-shrink-0 mt-0.5">
+                <div className="w-8 h-8 bg-muted flex items-center justify-center shrink-0 mt-0.5">
                   <Building className="h-4 w-4 text-muted-foreground" />
                 </div>
                 <div>
@@ -1430,11 +1839,11 @@ function PaymentStep({
 
       {/* Security notice */}
       <div className="flex items-start gap-4 p-5 bg-muted/30">
-        <Lock className="h-5 w-5 text-muted-foreground flex-shrink-0 mt-0.5" />
+        <Lock className="h-5 w-5 text-muted-foreground shrink-0 mt-0.5" />
         <div>
           <p className="text-sm font-medium">100% Secure Payment</p>
           <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
-            Your data is securely processed by Conekta, PCI DSS Level 1 certified.
+            Your data is securely processed by Mercado Pago, PCI DSS compliant.
             We never store your card details.
           </p>
         </div>

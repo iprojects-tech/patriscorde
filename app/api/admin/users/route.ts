@@ -1,37 +1,25 @@
-import { createClient } from "@supabase/supabase-js"
-import { createClient as createServerClient } from "@/lib/supabase/server"
-import { NextResponse } from "next/server"
+import { NextRequest, NextResponse } from "next/server"
+import { getSessionFromCookies } from "@/lib/session"
+import { pgQuery } from "@/lib/postgres"
+import bcrypt from "bcryptjs"
 
-// Create admin client with service role key
-function createAdminClient() {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
-  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!
-  
-  return createClient(supabaseUrl, supabaseServiceKey, {
-    auth: {
-      autoRefreshToken: false,
-      persistSession: false,
-    },
-  })
-}
-
-// Verify the requesting user is an admin
 async function verifyAdmin() {
-  const supabase = await createServerClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  
-  if (!user) return false
-  
-  const { data: adminData } = await supabase
-    .from("admin_users")
-    .select("id")
-    .or(`id.eq.${user.id},auth_user_id.eq.${user.id}`)
-    .maybeSingle()
-  
-  return !!adminData
+  const session = await getSessionFromCookies()
+  return session?.role === "admin"
 }
 
-// POST - Create new admin user
+export async function GET() {
+  const isAdmin = await verifyAdmin()
+  if (!isAdmin) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+  }
+
+  const result = await pgQuery(
+    "SELECT id, auth_user_id, name, email, role, created_at FROM public.admin_users ORDER BY created_at DESC",
+  )
+  return NextResponse.json({ users: result.rows })
+}
+
 export async function POST(request: Request) {
   try {
     const isAdmin = await verifyAdmin()
@@ -39,108 +27,54 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
 
-    const { email, password, name, role } = await request.json()
+    const { email, name, role, password } = await request.json()
 
-    if (!email || !password || !name || !role) {
+    if (!email || !name || !role || !password) {
       return NextResponse.json({ error: "Missing required fields" }, { status: 400 })
     }
-
-    const adminClient = createAdminClient()
-
-    // Create user in Supabase Auth
-    const { data: authData, error: authError } = await adminClient.auth.admin.createUser({
-      email,
-      password,
-      email_confirm: true, // Auto-confirm email
-      user_metadata: { name },
-    })
-
-    if (authError) {
-      console.error("Auth error:", authError)
-      return NextResponse.json({ error: authError.message }, { status: 400 })
+    if (String(password).length < 6) {
+      return NextResponse.json({ error: "Password must be at least 6 characters" }, { status: 400 })
     }
 
-    if (!authData.user) {
-      return NextResponse.json({ error: "Failed to create user" }, { status: 500 })
-    }
+    const passwordHash = await bcrypt.hash(String(password), 12)
 
-    // Create admin profile
-    const { error: profileError } = await adminClient
-      .from("admin_users")
-      .insert({
-        id: authData.user.id,
-        auth_user_id: authData.user.id,
-        email,
-        name,
-        role,
-      })
-
-    if (profileError) {
-      // Rollback: delete the auth user if profile creation fails
-      await adminClient.auth.admin.deleteUser(authData.user.id)
-      console.error("Profile error:", profileError)
-      return NextResponse.json({ error: profileError.message }, { status: 400 })
-    }
+    const result = await pgQuery(
+      `INSERT INTO public.admin_users (email, name, role, password_hash, password_updated_at)
+       VALUES ($1, $2, $3, $4, NOW())
+       RETURNING id, auth_user_id, name, email, role, created_at`,
+      [String(email).toLowerCase(), name, role, passwordHash],
+    )
 
     return NextResponse.json({
       success: true,
-      user: {
-        id: authData.user.id,
-        email,
-        name,
-        role,
-      },
+      user: result.rows[0],
     })
-  } catch (error) {
+  } catch (error: any) {
     console.error("Error creating admin user:", error)
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 })
+    return NextResponse.json({ error: error.message || "Internal server error" }, { status: 500 })
   }
 }
 
-// DELETE - Remove admin user
-export async function DELETE(request: Request) {
+export async function DELETE(request: NextRequest) {
   try {
     const isAdmin = await verifyAdmin()
     if (!isAdmin) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
 
-    const { searchParams } = new URL(request.url)
-    const userId = searchParams.get("id")
-
+    const userId = request.nextUrl.searchParams.get("id")
     if (!userId) {
       return NextResponse.json({ error: "Missing user ID" }, { status: 400 })
     }
 
-    const adminClient = createAdminClient()
-
-    // Delete from admin_users table
-    const { error: deleteError } = await adminClient
-      .from("admin_users")
-      .delete()
-      .or(`id.eq.${userId},auth_user_id.eq.${userId}`)
-
-    if (deleteError) {
-      console.error("Delete error:", deleteError)
-      return NextResponse.json({ error: deleteError.message }, { status: 400 })
-    }
-
-    // Also delete from auth.users for full deletion
-    const { error: authDeleteError } = await adminClient.auth.admin.deleteUser(userId)
-    
-    if (authDeleteError) {
-      console.error("Auth delete error:", authDeleteError)
-      // Don't return error since admin_users was already deleted
-    }
-
+    await pgQuery("DELETE FROM public.admin_users WHERE id = $1 OR auth_user_id = $1", [userId])
     return NextResponse.json({ success: true })
-  } catch (error) {
+  } catch (error: any) {
     console.error("Error deleting admin user:", error)
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 })
+    return NextResponse.json({ error: error.message || "Internal server error" }, { status: 500 })
   }
 }
 
-// PATCH - Update admin user
 export async function PATCH(request: Request) {
   try {
     const isAdmin = await verifyAdmin()
@@ -154,25 +88,18 @@ export async function PATCH(request: Request) {
       return NextResponse.json({ error: "Missing user ID" }, { status: 400 })
     }
 
-    const adminClient = createAdminClient()
-
-    const updateData: { name?: string; role?: string } = {}
-    if (name) updateData.name = name
-    if (role) updateData.role = role
-
-    const { error } = await adminClient
-      .from("admin_users")
-      .update(updateData)
-      .or(`id.eq.${id},auth_user_id.eq.${id}`)
-
-    if (error) {
-      console.error("Update error:", error)
-      return NextResponse.json({ error: error.message }, { status: 400 })
-    }
+    await pgQuery(
+      `UPDATE public.admin_users
+       SET
+         name = COALESCE($2, name),
+         role = COALESCE($3, role)
+       WHERE id = $1 OR auth_user_id = $1`,
+      [id, name ?? null, role ?? null],
+    )
 
     return NextResponse.json({ success: true })
-  } catch (error) {
+  } catch (error: any) {
     console.error("Error updating admin user:", error)
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 })
+    return NextResponse.json({ error: error.message || "Internal server error" }, { status: 500 })
   }
 }

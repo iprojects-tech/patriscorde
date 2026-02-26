@@ -63,7 +63,7 @@ export default function EditProductPage() {
   const [newColorName, setNewColorName] = useState("")
   const [newColorValue, setNewColorValue] = useState("#000000")
 
-  // Load product data from Supabase
+  // Load product data from server actions
   useEffect(() => {
     const fetchProduct = async () => {
       const product = await getAdminProductById(productId)

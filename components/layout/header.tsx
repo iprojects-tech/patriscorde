@@ -26,6 +26,7 @@ const navLinks = [
 ]
 
 export function Header() {
+  const [isMounted, setIsMounted] = useState(false)
   const [isScrolled, setIsScrolled] = useState(false)
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false)
   const [isCartOpen, setIsCartOpen] = useState(false)
@@ -34,6 +35,10 @@ export function Header() {
   const initializeCart = useCartStore((state) => state.initializeCart)
   const itemCount = items.reduce((sum, item) => sum + item.quantity, 0)
   const { user, isAuthenticated, isLoading, logout, checkAuth } = useCustomerAuth()
+
+  useEffect(() => {
+    setIsMounted(true)
+  }, [])
 
   useEffect(() => {
     checkAuth()
@@ -64,59 +69,71 @@ export function Header() {
           <div className="flex h-20 items-center justify-between">
             {/* Mobile Menu */}
             <div className="lg:hidden">
-              <Sheet open={isMobileMenuOpen} onOpenChange={setIsMobileMenuOpen}>
-                <SheetTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-10 w-10 hover:bg-transparent"
-                  >
-                    <Menu className="h-5 w-5" strokeWidth={1.5} />
-                    <span className="sr-only">Open menu</span>
-                  </Button>
-                </SheetTrigger>
-                <SheetContent side="left" className="w-full max-w-sm border-r border-border bg-background p-0">
-                  <div className="flex flex-col h-full">
-                    <div className="flex items-center justify-between p-6 border-b border-border">
-                      <Link
-                        href="/"
-                        className="text-lg font-medium tracking-[0.3em] uppercase"
-                        onClick={() => setIsMobileMenuOpen(false)}
-                      >
-                        Atelier
-                      </Link>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-10 w-10 hover:bg-transparent"
-                        onClick={() => setIsMobileMenuOpen(false)}
-                      >
-                        <X className="h-5 w-5" strokeWidth={1.5} />
-                      </Button>
-                    </div>
-                    <nav className="flex-1 p-6">
-                      <ul className="space-y-6">
-                        {navLinks.map((link, index) => (
-                          <motion.li
-                            key={link.href}
-                            initial={{ opacity: 0, x: -20 }}
-                            animate={{ opacity: 1, x: 0 }}
-                            transition={{ delay: index * 0.1, ease: premiumEasing }}
-                          >
-                            <Link
-                              href={link.href}
-                              className="block text-2xl font-serif tracking-wide text-foreground/80 hover:text-foreground transition-colors duration-300"
-                              onClick={() => setIsMobileMenuOpen(false)}
+              {isMounted ? (
+                <Sheet open={isMobileMenuOpen} onOpenChange={setIsMobileMenuOpen}>
+                  <SheetTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-10 w-10 hover:bg-transparent"
+                    >
+                      <Menu className="h-5 w-5" strokeWidth={1.5} />
+                      <span className="sr-only">Open menu</span>
+                    </Button>
+                  </SheetTrigger>
+                  <SheetContent side="left" className="w-full max-w-sm border-r border-border bg-background p-0">
+                    <div className="flex flex-col h-full">
+                      <div className="flex items-center justify-between p-6 border-b border-border">
+                        <Link
+                          href="/"
+                          className="text-lg font-medium tracking-[0.3em] uppercase"
+                          onClick={() => setIsMobileMenuOpen(false)}
+                        >
+                          Atelier
+                        </Link>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-10 w-10 hover:bg-transparent"
+                          onClick={() => setIsMobileMenuOpen(false)}
+                        >
+                          <X className="h-5 w-5" strokeWidth={1.5} />
+                        </Button>
+                      </div>
+                      <nav className="flex-1 p-6">
+                        <ul className="space-y-6">
+                          {navLinks.map((link, index) => (
+                            <motion.li
+                              key={link.href}
+                              initial={{ opacity: 0, x: -20 }}
+                              animate={{ opacity: 1, x: 0 }}
+                              transition={{ delay: index * 0.1, ease: premiumEasing }}
                             >
-                              {link.label}
-                            </Link>
-                          </motion.li>
-                        ))}
-                      </ul>
-                    </nav>
-                  </div>
-                </SheetContent>
-              </Sheet>
+                              <Link
+                                href={link.href}
+                                className="block text-2xl font-serif tracking-wide text-foreground/80 hover:text-foreground transition-colors duration-300"
+                                onClick={() => setIsMobileMenuOpen(false)}
+                              >
+                                {link.label}
+                              </Link>
+                            </motion.li>
+                          ))}
+                        </ul>
+                      </nav>
+                    </div>
+                  </SheetContent>
+                </Sheet>
+              ) : (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-10 w-10 hover:bg-transparent"
+                  aria-label="Open menu"
+                >
+                  <Menu className="h-5 w-5" strokeWidth={1.5} />
+                  <span className="sr-only">Open menu</span>
+                </Button>
+              )}
             </div>
 
             {/* Desktop Nav Left */}

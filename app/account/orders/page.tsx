@@ -7,7 +7,6 @@ import { motion, AnimatePresence } from "framer-motion"
 import { Package, ChevronDown, Loader2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { useCustomerAuth } from "@/store/customer-auth"
-import { createClient } from "@/lib/supabase/client"
 import { formatPrice } from "@/lib/db/types"
 import { premiumEasing } from "@/lib/motion"
 
@@ -51,18 +50,9 @@ export default function OrdersPage() {
     async function fetchOrders() {
       if (!user?.email) return
 
-      const supabase = createClient()
-      const { data } = await supabase
-        .from("orders")
-        .select(`
-          *,
-          items:order_items (
-            *,
-            product:products (main_image)
-          )
-        `)
-        .eq("customer_email", user.email)
-        .order("created_at", { ascending: false })
+      const response = await fetch("/api/account/orders", { cache: "no-store" })
+      const payload = await response.json()
+      const data = payload?.orders
 
       if (data) {
         setOrders(data)

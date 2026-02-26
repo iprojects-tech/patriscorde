@@ -57,7 +57,7 @@ export default function OrderConfirmation() {
               </div>
 
               <div className="flex items-start gap-4 p-5 border border-border">
-                <Package className="h-5 w-5 text-muted-foreground flex-shrink-0 mt-0.5" />
+                <Package className="h-5 w-5 text-muted-foreground shrink-0 mt-0.5" />
                 <div>
                   <p className="text-sm font-medium">Estimated delivery</p>
                   <p className="text-sm text-muted-foreground mt-1">

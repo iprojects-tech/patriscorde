@@ -1,63 +1,60 @@
 "use server"
 
-import { createClient } from "@/lib/supabase/server"
+import { pgQuery } from "@/lib/postgres"
 
 export async function searchProducts(query: string) {
   if (!query.trim()) return { products: [], categories: [] }
-  
-  const supabase = await createClient()
-  const normalizedQuery = query.toLowerCase().trim()
-  
+
+  const normalizedQuery = `%${query.toLowerCase().trim()}%`
+
   const [productsResult, categoriesResult] = await Promise.all([
-    supabase
-      .from("products")
-      .select("id, name, slug, description, price, main_image, sku, status")
-      .eq("status", "active")
-      .or(`name.ilike.%${normalizedQuery}%,description.ilike.%${normalizedQuery}%,sku.ilike.%${normalizedQuery}%`)
-      .limit(5),
-    supabase
-      .from("categories")
-      .select("id, name, slug, description")
-      .or(`name.ilike.%${normalizedQuery}%,description.ilike.%${normalizedQuery}%`)
-      .limit(3),
+    pgQuery(
+      `SELECT id, name, slug, description, price, main_image, sku, status
+       FROM public.products
+       WHERE status = 'active'
+         AND (LOWER(name) LIKE $1 OR LOWER(description) LIKE $1 OR LOWER(sku) LIKE $1)
+       LIMIT 5`,
+      [normalizedQuery],
+    ),
+    pgQuery(
+      `SELECT id, name, slug, description
+       FROM public.categories
+       WHERE LOWER(name) LIKE $1 OR LOWER(description) LIKE $1
+       LIMIT 3`,
+      [normalizedQuery],
+    ),
   ])
-  
+
   return {
-    products: productsResult.data || [],
-    categories: categoriesResult.data || [],
+    products: productsResult.rows || [],
+    categories: categoriesResult.rows || [],
   }
 }
 
 export async function getShopCategories() {
-  const supabase = await createClient()
-  
-  const { data, error } = await supabase
-    .from("categories")
-    .select("id, name, slug, description")
-    .order("name", { ascending: true })
-  
-  if (error) {
+  try {
+    const result = await pgQuery(
+      "SELECT id, name, slug, description FROM public.categories ORDER BY name ASC",
+    )
+    return result.rows
+  } catch (error) {
     console.error("Error fetching categories:", error)
     return []
   }
-  
-  return data
 }
 
 export async function getShopFeaturedProducts(limit = 4) {
-  const supabase = await createClient()
-  
-  const { data, error } = await supabase
-    .from("products")
-    .select("id, name, slug, description, price, main_image, status")
-    .eq("status", "active")
-    .eq("featured", true)
-    .limit(limit)
-  
-  if (error) {
+  try {
+    const result = await pgQuery(
+      `SELECT id, name, slug, description, price, main_image, status
+       FROM public.products
+       WHERE status = 'active' AND featured = true
+       LIMIT $1`,
+      [limit],
+    )
+    return result.rows
+  } catch (error) {
     console.error("Error fetching featured products:", error)
     return []
   }
-  
-  return data
 }

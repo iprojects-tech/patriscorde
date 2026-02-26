@@ -64,8 +64,6 @@ create table if not exists public.orders (
   total integer not null, -- in cents
   shipping_address jsonb,
   billing_address jsonb,
-  stripe_session_id text,
-  stripe_payment_intent_id text,
   notes text,
   created_at timestamp with time zone default now(),
   updated_at timestamp with time zone default now()

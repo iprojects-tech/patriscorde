@@ -1,4 +1,4 @@
-// Database types matching Supabase schema
+// Database types matching PostgreSQL schema
 
 export interface Category {
   id: string
@@ -41,8 +41,10 @@ export interface Customer {
   email: string
   name: string | null
   phone: string | null
-  address: string | null
+  address: unknown | null
   city: string | null
+  state: string | null
+  neighborhood: string | null
   country: string | null
   postal_code: string | null
   created_at: string
@@ -70,17 +72,16 @@ export interface Order {
   customer_id: string | null
   customer_email: string
   customer_name: string | null
-  status: "pending" | "processing" | "shipped" | "delivered" | "cancelled"
+  status: "pending" | "paid" | "confirmed" | "processing" | "shipped" | "delivered" | "cancelled" | "refunded"
   subtotal: number // in cents
   shipping: number // in cents
   tax: number // in cents
   total: number // in cents
-  shipping_address: string | null
-  shipping_city: string | null
-  shipping_country: string | null
-  shipping_postal_code: string | null
+  shipping_address: unknown | null
+  shipping_city?: string | null
+  shipping_country?: string | null
+  shipping_postal_code?: string | null
   notes: string | null
-  stripe_payment_intent_id: string | null
   created_at: string
   updated_at: string
   // Joined data
@@ -90,19 +91,18 @@ export interface Order {
 
 export interface AdminUser {
   id: string
-  auth_user_id: string
+  auth_user_id: string | null
   email: string
   name: string
-  role: "admin" | "manager" | "staff"
+  role: "admin" | "manager"
   created_at: string
-  updated_at: string
 }
 
 // Utility functions
 export function formatPrice(cents: number): string {
-  return new Intl.NumberFormat("en-EU", {
+  return new Intl.NumberFormat("es-MX", {
     style: "currency",
-    currency: "EUR",
+    currency: "MXN",
   }).format(cents / 100)
 }
 

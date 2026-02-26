@@ -73,7 +73,6 @@ export async function createStoreOrder(data: {
   shipping: number
   tax: number
   total: number
-  stripePaymentIntentId?: string
 }) {
   // Get or create customer
   const customer = await getOrCreateCustomer(data.email, {
@@ -102,7 +101,6 @@ export async function createStoreOrder(data: {
     shipping_city: data.city,
     shipping_country: data.country,
     shipping_postal_code: data.postalCode,
-    stripe_payment_intent_id: data.stripePaymentIntentId,
     items: data.items.map(item => ({
       product_id: item.productId,
       product_name: item.productName,
